@@ -1,0 +1,28 @@
+---
+- name: Remove Chef Infra Client from Linux
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Stop and disable Chef Client service
+      ansible.builtin.systemd:
+        name: chef-client.service
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove Chef package
+      ansible.builtin.package:
+        name: chef
+        state: absent
+
+    - name: Remove remaining Chef configuration and data
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/chef
+        - /var/chef
+        - /var/log/chef
+        - /opt/chef
