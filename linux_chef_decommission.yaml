@@ -2,7 +2,7 @@
 - name: Remove Chef Infra Client from Linux
   hosts: all
   become: true
-  gather_facts: false
+  gather_facts: true
 
   tasks:
     - name: Stop and disable Chef Client service
@@ -12,10 +12,25 @@
         enabled: false
       failed_when: false
 
-    - name: Remove Chef package
-      ansible.builtin.package:
+    - name: Purge Chef package on Debian and Ubuntu
+      ansible.builtin.apt:
         name: chef
         state: absent
+        purge: true
+        autoremove: true
+      when: ansible_distribution in ["Debian", "Ubuntu"]
+
+    - name: Remove Chef package on Red Hat Enterprise Linux
+      ansible.builtin.dnf:
+        name: chef
+        state: absent
+      when: ansible_distribution == "RedHat"
+
+    - name: Remove Chef package on Amazon Linux
+      ansible.builtin.dnf:
+        name: chef
+        state: absent
+      when: ansible_distribution == "Amazon"
 
     - name: Remove remaining Chef configuration and data
       ansible.builtin.file:
