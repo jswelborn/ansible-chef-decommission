@@ -1,0 +1,85 @@
+---
+- name: Fully remove Chef Infra Client from Windows
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Stop Chef Client service when present
+      ansible.windows.win_service:
+        name: chef-client
+        state: stopped
+        start_mode: disabled
+      failed_when: false
+
+    - name: Find installed Chef MSI product IDs
+      ansible.windows.win_shell: |
+        $chefProducts = Get-ItemProperty `
+          'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' `
+          -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.DisplayName -match '^Chef( Infra Client)?'
+          } |
+          ForEach-Object {
+            $_.PSChildName
+          }
+
+        @($chefProducts) | ConvertTo-Json -Compress
+      register: chef_product_lookup
+      changed_when: false
+
+    - name: Set Chef MSI product IDs
+      ansible.builtin.set_fact:
+        chef_product_ids: >-
+          {{ chef_product_lookup.stdout | default('[]', true) | from_json }}
+
+    - name: Uninstall Chef Infra Client MSI packages
+      ansible.windows.win_package:
+        product_id: "{{ item }}"
+        state: absent
+      loop: "{{ chef_product_ids }}"
+      when: chef_product_ids | length > 0
+
+    - name: Remove Chef scheduled tasks when present
+      ansible.windows.win_shell: |
+        $chefTasks = Get-ScheduledTask -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.TaskName -match 'chef' -or $_.TaskPath -match 'chef'
+          }
+
+        foreach ($task in $chefTasks) {
+          Unregister-ScheduledTask `
+            -TaskName $task.TaskName `
+            -TaskPath $task.TaskPath `
+            -Confirm:$false
+        }
+      changed_when: true
+      failed_when: false
+
+    - name: Remove remaining Chef files, configuration, and logs
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - C:\chef
+        - C:\opscode\chef
+        - C:\ProgramData\Chef
+        - C:\ProgramData\chef
+        - C:\Windows\Temp\chef
+
+    - name: Verify Chef is no longer installed
+      ansible.windows.win_shell: |
+        $chefProducts = Get-ItemProperty `
+          'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' `
+          -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.DisplayName -match '^Chef( Infra Client)?'
+          }
+
+        if ($chefProducts) {
+          throw "Chef is still registered as installed."
+        }
+
+        Write-Output "Chef removal verified."
+      changed_when: false
