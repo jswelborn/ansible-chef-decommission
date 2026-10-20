@@ -155,11 +155,23 @@
       when:
         - chef_directory_check.rc == 0
 
+    - name: Allow Windows reboot to begin
+      ansible.builtin.pause:
+        seconds: 20
+      when:
+        - chef_directory_check.rc == 0
+
     - name: Wait for Windows host to return after reboot
       ansible.builtin.wait_for_connection:
         timeout: 1800
-        delay: 15
-        sleep: 10
+        delay: 30
+        sleep: 15
+      when:
+        - chef_directory_check.rc == 0
+
+    - name: Allow WinRM to fully initialize after reboot
+      ansible.builtin.pause:
+        seconds: 30
       when:
         - chef_directory_check.rc == 0
 
