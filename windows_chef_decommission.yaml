@@ -63,6 +63,22 @@
       changed_when: chef_scheduled_task_removal.stdout | trim | int > 0
       failed_when: false
 
+    - name: Stop remaining Chef and Ruby processes
+      ansible.windows.win_shell: |
+        $processNames = @(
+          'chef-client',
+          'chef',
+          'ruby'
+        )
+
+        foreach ($processName in $processNames) {
+          Get-Process -Name $processName -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+
+        Start-Sleep -Seconds 3
+      changed_when: false
+
     - name: Remove remaining Chef files, configuration, and logs
       ansible.windows.win_file:
         path: "{{ item }}"
