@@ -63,20 +63,84 @@
       changed_when: chef_scheduled_task_removal.stdout | trim | int > 0
       failed_when: false
 
-    - name: Stop remaining Chef and Ruby processes
+    - name: Stop remaining Chef services
       ansible.windows.win_shell: |
-        $processNames = @(
-          'chef-client',
-          'chef',
-          'ruby'
-        )
-
-        foreach ($processName in $processNames) {
-          Get-Process -Name $processName -ErrorAction SilentlyContinue |
-            Stop-Process -Force -ErrorAction SilentlyContinue
-        }
+        Get-Service -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.Name -match 'chef' -or
+            $_.DisplayName -match 'chef'
+          } |
+          Stop-Service -Force -ErrorAction SilentlyContinue
 
         Start-Sleep -Seconds 3
+      changed_when: false
+
+    - name: Stop remaining Chef processes
+      ansible.windows.win_shell: |
+        $chefPaths = @(
+          'C:\opscode\chef',
+          'C:\chef'
+        )
+
+        $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.ExecutablePath -and (
+              $_.ExecutablePath.StartsWith(
+                'C:\opscode\chef',
+                [System.StringComparison]::OrdinalIgnoreCase
+              ) -or
+              $_.ExecutablePath.StartsWith(
+                'C:\chef',
+                [System.StringComparison]::OrdinalIgnoreCase
+              )
+            )
+          }
+
+        foreach ($process in $processes) {
+          Stop-Process `
+            -Id $process.ProcessId `
+            -Force `
+            -ErrorAction SilentlyContinue
+        }
+
+        Get-Process -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.ProcessName -in @(
+              'chef',
+              'chef-client',
+              'chef-service',
+              'ruby',
+              'rubyw'
+            )
+          } |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+
+        Start-Sleep -Seconds 5
+      changed_when: false
+
+    - name: Verify no Chef processes remain
+      ansible.windows.win_shell: |
+        $remaining = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.ExecutablePath -and (
+              $_.ExecutablePath.StartsWith(
+                'C:\opscode\chef',
+                [System.StringComparison]::OrdinalIgnoreCase
+              ) -or
+              $_.ExecutablePath.StartsWith(
+                'C:\chef',
+                [System.StringComparison]::OrdinalIgnoreCase
+              )
+            )
+          }
+
+        if ($remaining) {
+          $remaining |
+            Select-Object ProcessId, Name, ExecutablePath |
+            Format-Table -AutoSize |
+            Out-String |
+            Write-Output
+        }
       changed_when: false
 
     - name: Take ownership of remaining Chef directories
