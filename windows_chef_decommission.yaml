@@ -5,126 +5,144 @@
 
   tasks:
     - name: Stop Chef Client service when present
-      ansible.windows.win_service:
-        name: chef-client
-        state: stopped
-        start_mode: disabled
-      failed_when: false
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "Stop-Service -Name 'chef-client' -Force -ErrorAction SilentlyContinue;
+          Set-Service -Name 'chef-client' -StartupType Disabled -ErrorAction SilentlyContinue"
+      changed_when: false
 
     - name: Find installed Chef MSI product IDs
-      ansible.windows.win_shell: |
-        $chefProducts = @(
-          Get-ItemProperty `
-            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.DisplayName -match '^Chef( Infra Client)?'
-            } |
-            ForEach-Object {
-              $_.PSChildName
-            }
-        )
-
-        ConvertTo-Json -InputObject $chefProducts -Compress
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "$chefProducts = @(
+          Get-ItemProperty
+          'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          -ErrorAction SilentlyContinue |
+          Where-Object {
+          $_.DisplayName -match '^Chef( Infra Client)?'
+          } |
+          ForEach-Object {
+          $_.PSChildName
+          }
+          );
+          if ($chefProducts) {
+          $chefProducts -join '|'
+          }"
       register: chef_product_lookup
       changed_when: false
 
     - name: Set Chef MSI product IDs
       ansible.builtin.set_fact:
         chef_product_ids: >-
-          {{ chef_product_lookup.stdout | default('[]', true) | from_json }}
+          {{
+            chef_product_lookup.stdout
+            | trim
+            | default('', true)
+            | split('|')
+            | reject('equalto', '')
+            | list
+          }}
 
     - name: Uninstall Chef Infra Client MSI packages
-      ansible.windows.win_package:
-        product_id: "{{ item }}"
-        state: absent
+      ansible.windows.win_command:
+        cmd: >-
+          msiexec.exe /x {{ item }} /qn /norestart
       loop: "{{ chef_product_ids }}"
-      when: chef_product_ids | length > 0
+      register: chef_msi_removal
+      failed_when:
+        - chef_msi_removal.rc not in [0, 1605, 1614, 3010]
+      when:
+        - chef_product_ids | length > 0
 
     - name: Remove Chef scheduled tasks when present
-      ansible.windows.win_shell: |
-        $chefTasks = @(
-          Get-ScheduledTask -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.TaskName -match 'chef' -or $_.TaskPath -match 'chef'
-            }
-        )
-
-        foreach ($task in $chefTasks) {
-          Unregister-ScheduledTask `
-            -TaskName $task.TaskName `
-            -TaskPath $task.TaskPath `
-            -Confirm:$false
-        }
-
-        $chefTasks.Count
-      register: chef_scheduled_task_removal
-      changed_when: chef_scheduled_task_removal.stdout | trim | int > 0
-      failed_when: false
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "$tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue |
+          Where-Object {
+          $_.TaskName -match 'chef' -or $_.TaskPath -match 'chef'
+          });
+          foreach ($task in $tasks) {
+          Unregister-ScheduledTask
+          -TaskName $task.TaskName
+          -TaskPath $task.TaskPath
+          -Confirm:$false
+          -ErrorAction SilentlyContinue
+          }"
+      changed_when: false
 
     - name: Stop remaining Chef services
-      ansible.windows.win_shell: |
-        Get-Service -ErrorAction SilentlyContinue |
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "Get-Service -ErrorAction SilentlyContinue |
           Where-Object {
-            $_.Name -match 'chef' -or
-            $_.DisplayName -match 'chef'
+          $_.Name -match 'chef' -or $_.DisplayName -match 'chef'
           } |
-          Stop-Service -Force -ErrorAction SilentlyContinue
-
-        Start-Sleep -Seconds 3
+          Stop-Service -Force -ErrorAction SilentlyContinue"
       changed_when: false
 
     - name: Stop remaining Chef processes
-      ansible.windows.win_shell: |
-        $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "$processes = Get-CimInstance Win32_Process
+          -ErrorAction SilentlyContinue |
           Where-Object {
-            $_.ExecutablePath -and (
-              $_.ExecutablePath.StartsWith(
-                'C:\opscode\chef',
-                [System.StringComparison]::OrdinalIgnoreCase
-              ) -or
-              $_.ExecutablePath.StartsWith(
-                'C:\chef',
-                [System.StringComparison]::OrdinalIgnoreCase
-              )
-            )
-          }
-
-        foreach ($process in $processes) {
-          Stop-Process `
-            -Id $process.ProcessId `
-            -Force `
-            -ErrorAction SilentlyContinue
-        }
-
-        Get-Process -ErrorAction SilentlyContinue |
+          $_.ExecutablePath -and (
+          $_.ExecutablePath.StartsWith(
+          'C:\opscode\chef',
+          [System.StringComparison]::OrdinalIgnoreCase
+          ) -or
+          $_.ExecutablePath.StartsWith(
+          'C:\chef',
+          [System.StringComparison]::OrdinalIgnoreCase
+          )
+          )
+          };
+          foreach ($process in $processes) {
+          Stop-Process
+          -Id $process.ProcessId
+          -Force
+          -ErrorAction SilentlyContinue
+          };
+          Get-Process -ErrorAction SilentlyContinue |
           Where-Object {
-            $_.ProcessName -in @(
-              'chef',
-              'chef-client',
-              'chef-service',
-              'ruby',
-              'rubyw'
-            )
+          $_.ProcessName -in @(
+          'chef',
+          'chef-client',
+          'chef-service',
+          'ruby',
+          'rubyw'
+          )
           } |
-          Stop-Process -Force -ErrorAction SilentlyContinue
-
-        Start-Sleep -Seconds 5
+          Stop-Process -Force -ErrorAction SilentlyContinue;
+          Start-Sleep -Seconds 3"
       changed_when: false
 
     - name: Check whether Chef directories remain
-      ansible.windows.win_stat:
-        path: C:\opscode\chef
-      register: chef_directory
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "if (Test-Path -LiteralPath 'C:\opscode\chef') {
+          exit 0
+          } else {
+          exit 1
+          }"
+      register: chef_directory_check
+      changed_when: false
+      failed_when: false
 
     - name: Reboot Windows host to release remaining Chef file locks
-      ansible.windows.win_shell: |
-        shutdown.exe /r /t 5 /f
+      ansible.windows.win_command:
+        cmd: shutdown.exe /r /t 5 /f
       async: 10
       poll: 0
       when:
-        - chef_directory.stat.exists
+        - chef_directory_check.rc == 0
 
     - name: Wait for Windows host to return after reboot
       ansible.builtin.wait_for_connection:
@@ -132,64 +150,70 @@
         delay: 15
         sleep: 10
       when:
-        - chef_directory.stat.exists
+        - chef_directory_check.rc == 0
 
     - name: Take ownership of remaining Chef directories
-      ansible.windows.win_shell: |
-        $paths = @(
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "$paths = @(
           'C:\chef',
           'C:\opscode\chef',
           'C:\ProgramData\Chef',
           'C:\ProgramData\chef',
           'C:\Windows\Temp\chef'
-        )
-
-        foreach ($path in $paths) {
+          );
+          foreach ($path in $paths) {
           if (Test-Path -LiteralPath $path) {
-            & takeown.exe /F $path /R /D Y | Out-Null
-            & icacls.exe $path /grant '*S-1-5-32-544:F' /T /C | Out-Null
+          & takeown.exe /F $path /R /D Y | Out-Null;
+          & icacls.exe $path /grant '*S-1-5-32-544:F' /T /C | Out-Null
           }
-        }
+          }"
       changed_when: false
 
     - name: Remove remaining Chef files, configuration, and logs
-      ansible.windows.win_file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - C:\chef
-        - C:\opscode\chef
-        - C:\ProgramData\Chef
-        - C:\ProgramData\chef
-        - C:\Windows\Temp\chef
-
-    - name: Verify Chef is no longer installed
-      ansible.windows.win_shell: |
-        $chefProducts = Get-ItemProperty `
-          'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' `
-          -ErrorAction SilentlyContinue |
-          Where-Object {
-            $_.DisplayName -match '^Chef( Infra Client)?'
-          }
-
-        if ($chefProducts) {
-          throw "Chef is still registered as installed."
-        }
-
-        $remainingPaths = @(
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "$paths = @(
           'C:\chef',
           'C:\opscode\chef',
           'C:\ProgramData\Chef',
           'C:\ProgramData\chef',
           'C:\Windows\Temp\chef'
-        ) | Where-Object {
+          );
+          foreach ($path in $paths) {
+          if (Test-Path -LiteralPath $path) {
+          Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+          }
+          }"
+
+    - name: Verify Chef is no longer installed
+      ansible.windows.win_command:
+        cmd: >-
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+          -Command "$chefProducts = Get-ItemProperty
+          'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          -ErrorAction SilentlyContinue |
+          Where-Object {
+          $_.DisplayName -match '^Chef( Infra Client)?'
+          };
+          if ($chefProducts) {
+          throw 'Chef is still registered as installed.'
+          };
+          $remainingPaths = @(
+          'C:\chef',
+          'C:\opscode\chef',
+          'C:\ProgramData\Chef',
+          'C:\ProgramData\chef',
+          'C:\Windows\Temp\chef'
+          ) | Where-Object {
           Test-Path -LiteralPath $_
-        }
-
-        if ($remainingPaths) {
-          throw "Chef directories still exist: $($remainingPaths -join ', ')"
-        }
-
-        Write-Output "Chef removal verified."
+          };
+          if ($remainingPaths) {
+          throw ('Chef directories still exist: ' +
+          ($remainingPaths -join ', '))
+          };
+          Write-Output 'Chef removal verified.'"
       changed_when: false
