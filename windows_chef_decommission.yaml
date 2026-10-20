@@ -119,12 +119,18 @@
       register: chef_directory
 
     - name: Reboot Windows host to release remaining Chef file locks
-      ansible.builtin.reboot:
-        msg: "Rebooting to release remaining Chef file locks before cleanup."
-        reboot_timeout: 1800
-        connect_timeout: 30
-        pre_reboot_delay: 5
-        post_reboot_delay: 15
+      ansible.windows.win_shell: |
+        shutdown.exe /r /t 5 /f
+      async: 10
+      poll: 0
+      when:
+        - chef_directory.stat.exists
+
+    - name: Wait for Windows host to return after reboot
+      ansible.builtin.wait_for_connection:
+        timeout: 1800
+        delay: 15
+        sleep: 10
       when:
         - chef_directory.stat.exists
 
